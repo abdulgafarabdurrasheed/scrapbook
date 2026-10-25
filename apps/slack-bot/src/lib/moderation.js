@@ -13,9 +13,27 @@ const SCAN_PAGE_SIZE = 200;
 const MAX_POST_TEXT_LENGTH = 2_800;
 
 const updateLocks = new Map();
+const botAuthorCache = new Map();
 
 const hashText = (text) =>
   createHash("sha256").update(text || "", "utf8").digest("hex");
+
+const isBotAuthor = async (client, slackId) => {
+  if (!slackId || !client?.users?.info) return false;
+  if (!botAuthorCache.has(slackId)) {
+    botAuthorCache.set(
+      slackId,
+      client.users
+        .info({ user: slackId })
+        .then((result) => result?.user?.is_bot === true)
+        .catch((error) => {
+          console.warn(`Could not check whether ${slackId} is a bot:`, error.message);
+          return false;
+        }),
+    );
+  }
+  return botAuthorCache.get(slackId);
+};
 
 const getConfiguredModeratorIds = () => new Set(parseModeratorIds());
 
@@ -161,10 +179,11 @@ const withUpdateLock = async (updateId, operation) => {
   }
 };
 
-export const processUpdateForModeration = (update) =>
+export const processUpdateForModeration = (update, client) =>
   withUpdateLock(update.id, async () => {
     const contentHash = hashText(update.text);
     const matches = await findModerationMatches(update.text || "");
+    if (matches.length && (await isBotAuthor(client, update.accountsSlackID))) return null;
     const flaggedTerms = [...new Set(matches.map(({ word }) => word))];
     const flaggedCategories = [
       ...new Set(matches.map(({ categoryKey }) => categoryKey).filter(Boolean)),
@@ -384,7 +403,7 @@ const reviewAndAlert = async (client, update) => {
   const previousReview = await prisma.moderationReview.findUnique({
     where: { updateId: update.id },
   });
-  const review = await processUpdateForModeration(update);
+  const review = await processUpdateForModeration(update, client);
   if (!review) return;
   if (review.status === "superseded") {
     await closeSupersededAlert(client, review);
