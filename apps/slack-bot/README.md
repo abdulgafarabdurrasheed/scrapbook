@@ -20,6 +20,20 @@ Scrappy provides some helpful commands in Slack. These commands are also documen
 - _Edit_ a post: edit the Slack message and it will automatically update for you
 - _Post_ a message to the `#scrapbook` channel or add an existing Slack message to Scrapbook by reacting to it with the `:scrappy:` emoji (Note: If it isn't working, make sure Scrappy is added to the channel by mentioning `@scrappy`)
 
+## Scrapbook post moderation
+
+Scrappy ports Nemo AutoMod's configurable `word`, `substring`, and `regex` matching modes for Scrapbook post text. A match creates a candidate for a human moderator; matching never deletes or warns on its own. Regex rules run in a worker with Nemo's 50 ms search limit so a slow pattern cannot block Scrappy's event loop.
+
+Rules are provided as JSON in `SCRAPBOOK_AUTOMOD_RULES`, using Nemo's field names. For a local plumbing check, use the harmless word `modtest`:
+
+```sh
+SCRAPBOOK_AUTOMOD_RULES='[{"word":"modtest","match_mode":"word","effect":"flag"}]'
+```
+
+The repository does not include Nemo's live rule data. Configure only the existing, moderator-approved `flag` rules for production; the `modtest` example only checks that the alert and review flow works. The bot does not infer CoC violations from context. `SCRAPBOOK_BAD_WORDS` remains supported as a comma-separated list of base64-encoded words in whole-word mode.
+
+Set `SCRAPBOOK_MODERATION_CHANNEL_ID` to a private review channel and `SCRAPBOOK_MODERATOR_USER_IDS` to the comma-separated IDs allowed to review. Add Scrappy to the channel, enable Slack Interactivity, and point its request URL at the existing `/slack/events` endpoint. The app needs `chat:write`, `im:write`, `views:write`, and permission to delete the source Slack message when one exists.
+
 ## Contributing
 
 Contributions are encouraged and welcome! There are two GitHub repositories that contain code for Scrapbook: the [Scrapbook website](https://github.com/hackclub/scrapbook#contributing) and [Scrappy (the Slack bot)](https://github.com/hackclub/scrappy#contributing). Each repository has a section on contributing guidelines and how to run each project locally.
