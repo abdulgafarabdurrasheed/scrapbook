@@ -22,7 +22,7 @@ Scrappy provides some helpful commands in Slack. These commands are also documen
 
 ## Scrapbook post moderation
 
-Scrappy ports Nemo AutoMod's configurable `word`, `substring`, and `regex` matching modes for Scrapbook post text. A match creates a candidate for a human moderator; matching never deletes or warns on its own. Regex rules run in a worker with Nemo's 50 ms search limit so a slow pattern cannot block Scrappy's event loop.
+Scrappy ports Nemo AutoMod's configurable `word`, `substring`, and `regex` matching modes for Scrapbook post text. A match creates a candidate for a human moderator; matching never deletes or warns on its own. Regex rules run in a worker with Nemo's 50 ms search limit so a slow pattern cannot block Scrappy's event loop. Nemo uses Python's `regex` syntax while Scrappy uses JavaScript regular expressions, so review production regex-mode rules for compatibility; invalid JavaScript patterns are skipped with a startup warning.
 
 The scan runs once when Scrappy starts and every 30 minutes after that. It reads recent posts from the shared Scrapbook database and keeps a 30-minute overlap between scans to catch late arrivals. On first startup it checks roughly the previous hour. Slack post edits are rechecked immediately.
 

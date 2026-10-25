@@ -135,6 +135,12 @@ const buildRule = (entry) => {
   if (entry.effect !== "flag") return null;
   if (matchMode === "word") return buildWordRule(word, categoryKey);
   if (matchMode === "regex") {
+    try {
+      new RegExp(word, "iu");
+    } catch {
+      return null;
+    }
+
     return {
       word,
       matchMode,
