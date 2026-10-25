@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import { DeleteObjectCommand } from "@aws-sdk/client-s3";
 import prisma from "./prisma.js";
+import s3 from "./s3.js";
 import {
   findModerationMatches,
   moderationRulesConfigured,
@@ -14,6 +16,129 @@ const updateLocks = new Map();
 
 const hashText = (text) =>
   createHash("sha256").update(text || "", "utf8").digest("hex");
+
+const getConfiguredModeratorIds = () => new Set(parseModeratorIds());
+
+const postEphemeralNotice = async (client, channel, user, text) => {
+  if (!channel || !user) return;
+  try {
+    await client.chat.postEphemeral({ channel, user, text });
+  } catch (error) {
+    console.error("Could not send Scrapbook moderation notice:", error);
+  }
+};
+
+const finishReviewMessage = async (client, review, text) => {
+  if (!review?.reportChannel || !review.reportMessageTs) return;
+  await client.chat.update({
+    channel: review.reportChannel,
+    ts: review.reportMessageTs,
+    text,
+    blocks: [
+      {
+        type: "section",
+        text: { type: "plain_text", text },
+      },
+    ],
+  });
+};
+
+const isAuthorizedModerator = (userId) =>
+  Boolean(userId && getConfiguredModeratorIds().has(userId));
+
+const parseActionValue = (value) => {
+  try {
+    const parsed = JSON.parse(value || "{}");
+    if (typeof parsed.id !== "string" || typeof parsed.hash !== "string") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+const getReviewAndUpdate = async (reviewId, contentHash) => {
+  const review = await prisma.moderationReview.findUnique({ where: { id: reviewId } });
+  if (!review || review.contentHash !== contentHash || review.status !== "pending") {
+    return { error: "This review is no longer pending or its post has changed." };
+  }
+
+  const update = await prisma.updates.findUnique({
+    where: { id: review.updateId },
+    select: {
+      id: true,
+      text: true,
+      accountsID: true,
+      accountsSlackID: true,
+      channel: true,
+      messageTimestamp: true,
+      attachments: true,
+      Accounts: { select: { slackID: true } },
+      SlackAccounts: { select: { slackID: true } },
+    },
+  });
+  if (!update || hashText(update.text) !== contentHash) {
+    return { error: "The post changed or was deleted. Scan it again before reviewing." };
+  }
+
+  return { review, update };
+};
+
+const claimReview = async (review, reviewerId) => {
+  const result = await prisma.moderationReview.updateMany({
+    where: {
+      id: review.id,
+      contentHash: review.contentHash,
+      status: "pending",
+    },
+    data: { status: "processing", reviewedBy: reviewerId },
+  });
+  return result?.count === 1;
+};
+
+const releaseReviewClaim = async (reviewId) => {
+  await prisma.moderationReview.updateMany({
+    where: { id: reviewId, status: "processing" },
+    data: { status: "pending", reviewedBy: null },
+  });
+};
+
+const ownedUploadKey = (value, accountId) => {
+  if (!accountId || typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    const allowedHosts = new Set([
+      "scrapbook-into-the-redwoods.s3.amazonaws.com",
+      "scrapbook-into-the-redwoods.s3.us-east-1.amazonaws.com",
+    ]);
+    if (url.protocol !== "https:" || !allowedHosts.has(url.hostname)) return null;
+    const key = decodeURIComponent(url.pathname.slice(1));
+    return key.startsWith(`web/${accountId}/`) && !key.split("/").includes("..")
+      ? key
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const deletePostAndOwnedUploads = async (update) => {
+  const removed = await prisma.updates.delete({ where: { id: update.id } });
+  if (!removed) throw new Error("The post could not be removed from Scrapbook.");
+
+  for (const attachment of update.attachments || []) {
+    const key = ownedUploadKey(attachment, update.accountsID);
+    if (!key) continue;
+    try {
+      await s3.send(
+        new DeleteObjectCommand({
+          Bucket: "scrapbook-into-the-redwoods",
+          Key: key,
+        }),
+      );
+    } catch (error) {
+      console.error("Could not remove a rejected post's owned upload:", error);
+    }
+  }
+};
 
 const withUpdateLock = async (updateId, operation) => {
   const previous = updateLocks.get(updateId) || Promise.resolve();
@@ -273,6 +398,227 @@ const reviewAndAlert = async (client, update) => {
     });
   }
   await postModerationAlert(client, review);
+};
+
+export const reviewScrapbookUpdate = async (client, updateId) => {
+  const update = await fetchUpdateWithAuthor(updateId);
+  if (!update) return;
+  await reviewAndAlert(client, update);
+};
+
+export const registerModerationActions = (slackApp) => {
+  slackApp.action("scrapbook_moderation_accept", async ({ ack, body, action, client }) => {
+    await ack();
+    if (!isAuthorizedModerator(body.user?.id)) {
+      await postEphemeralNotice(
+        client,
+        body.channel?.id,
+        body.user?.id,
+        "You are not on the configured Scrapbook moderator allowlist.",
+      );
+      return;
+    }
+
+    const value = parseActionValue(action.value);
+    if (!value) return;
+    const found = await getReviewAndUpdate(value.id, value.hash);
+    if (found.error) {
+      await postEphemeralNotice(client, body.channel?.id, body.user.id, found.error);
+      return;
+    }
+
+    const accepted = await prisma.moderationReview.updateMany({
+      where: { id: value.id, contentHash: value.hash, status: "pending" },
+      data: { status: "accepted", reviewedBy: body.user.id, reviewedAt: new Date() },
+    });
+    if (accepted?.count !== 1) {
+      await postEphemeralNotice(
+        client,
+        body.channel?.id,
+        body.user.id,
+        "Another moderator already handled this review.",
+      );
+      return;
+    }
+
+    const review = await prisma.moderationReview.findUnique({ where: { id: value.id } });
+    await finishReviewMessage(
+      client,
+      review,
+      `Accepted by <@${body.user.id}> as not harmful. The post remains on Scrapbook.`,
+    );
+  });
+
+  slackApp.action("scrapbook_moderation_reject", async ({ ack, body, action, client }) => {
+    await ack();
+    if (!isAuthorizedModerator(body.user?.id)) {
+      await postEphemeralNotice(
+        client,
+        body.channel?.id,
+        body.user?.id,
+        "You are not on the configured Scrapbook moderator allowlist.",
+      );
+      return;
+    }
+
+    const value = parseActionValue(action.value);
+    if (!value) return;
+    const found = await getReviewAndUpdate(value.id, value.hash);
+    if (found.error) {
+      await postEphemeralNotice(client, body.channel?.id, body.user.id, found.error);
+      return;
+    }
+
+    await client.views.open({
+      trigger_id: body.trigger_id,
+      view: {
+        type: "modal",
+        callback_id: "scrapbook_moderation_reject_submit",
+        private_metadata: JSON.stringify({ id: value.id, hash: value.hash }),
+        title: { type: "plain_text", text: "Reject Scrapbook post" },
+        submit: { type: "plain_text", text: "Reject post" },
+        close: { type: "plain_text", text: "Cancel" },
+        blocks: [
+          {
+            type: "input",
+            block_id: "rejection_reason_block",
+            label: { type: "plain_text", text: "Reason to send to the author" },
+            element: {
+              type: "plain_text_input",
+              action_id: "rejection_reason",
+              multiline: true,
+              max_length: 1000,
+              placeholder: {
+                type: "plain_text",
+                text: "Explain why this post is being rejected.",
+              },
+            },
+          },
+        ],
+      },
+    });
+  });
+
+  slackApp.view(
+    "scrapbook_moderation_reject_submit",
+    async ({ ack, body, view, client }) => {
+      const reason = view.state.values.rejection_reason_block.rejection_reason.value?.trim();
+      if (!reason) {
+        await ack({
+          response_action: "errors",
+          errors: { rejection_reason_block: "Enter a reason to send to the post author." },
+        });
+        return;
+      }
+      await ack();
+
+      const value = parseActionValue(view.private_metadata);
+      const reviewerId = body.user?.id;
+      if (!value || !isAuthorizedModerator(reviewerId)) {
+        await postEphemeralNotice(
+          client,
+          process.env.SCRAPBOOK_MODERATION_CHANNEL_ID,
+          reviewerId,
+          "You are not authorized to reject Scrapbook posts.",
+        );
+        return;
+      }
+
+      const found = await getReviewAndUpdate(value.id, value.hash);
+      if (found.error) {
+        await postEphemeralNotice(
+          client,
+          process.env.SCRAPBOOK_MODERATION_CHANNEL_ID,
+          reviewerId,
+          found.error,
+        );
+        return;
+      }
+
+      const { review, update } = found;
+      const authorSlackId =
+        update.accountsSlackID || update.SlackAccounts?.slackID || update.Accounts?.slackID;
+      if (!authorSlackId) {
+        await postEphemeralNotice(
+          client,
+          review.reportChannel,
+          reviewerId,
+          "This author has no linked Slack account, so the rejection reason cannot be sent. The post was left unchanged.",
+        );
+        return;
+      }
+
+      if (!(await claimReview(review, reviewerId))) {
+        await postEphemeralNotice(
+          client,
+          review.reportChannel,
+          reviewerId,
+          "Another moderator already handled this review.",
+        );
+        return;
+      }
+
+      let authorNotified = false;
+      try {
+        const dm = await client.conversations.open({ users: authorSlackId });
+        if (!dm?.ok || !dm.channel?.id) throw new Error(dm?.error || "Could not open author DM");
+        const sent = await client.chat.postMessage({
+          channel: dm.channel.id,
+          text: `A moderator rejected your Scrapbook post for this reason:\n\n${reason}`,
+          mrkdwn: false,
+          unfurl_links: false,
+          unfurl_media: false,
+        });
+        if (!sent?.ok) throw new Error(sent?.error || "Could not send author DM");
+        authorNotified = true;
+
+        await deletePostAndOwnedUploads(update);
+        let sourceMessageWarning = "";
+        if (update.channel && update.messageTimestamp !== null) {
+          try {
+            const ts = String(update.messageTimestamp);
+            const deleted = await client.chat.delete({
+              token: process.env.SLACK_USER_TOKEN,
+              channel: update.channel,
+              ts,
+            });
+            if (!deleted?.ok) throw new Error(deleted?.error || "Slack did not delete the source message");
+          } catch (error) {
+            sourceMessageWarning = " The Scrapbook post was removed, but its source Slack message could not be deleted; please remove it manually.";
+            console.error("Could not delete rejected Scrapbook source message:", error);
+          }
+        }
+
+        const savedReview = await prisma.moderationReview.update({
+          where: { id: review.id },
+          data: {
+            status: "rejected",
+            rejectionReason: reason,
+            reviewedBy: reviewerId,
+            reviewedAt: new Date(),
+          },
+        });
+        if (!savedReview) throw new Error("The rejection decision could not be recorded.");
+        const completedReview = await prisma.moderationReview.findUnique({
+          where: { id: review.id },
+        });
+        await finishReviewMessage(
+          client,
+          completedReview,
+          `Rejected by <@${reviewerId}>. The post was removed from Scrapbook and the author was sent the reason.${sourceMessageWarning}`,
+        );
+      } catch (error) {
+        await releaseReviewClaim(review.id);
+        await postEphemeralNotice(
+          client,
+          review.reportChannel,
+          reviewerId,
+          `${authorNotified ? "The author received the reason, but " : ""}${error.message || "The post could not be rejected."} The review remains open.`,
+        );
+        console.error("Scrapbook moderation rejection failed:", error);
+      }
+    },
+  );
 };
 
 const scanPage = async (windowStart, scanThrough, cursor) => {

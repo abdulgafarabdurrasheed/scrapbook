@@ -22,7 +22,10 @@ import reactionAdded from "./events/reactionAdded.js";
 import reactionRemoved from "./events/reactionRemoved.js";
 import { commands } from "./commands/commands.js";
 import metrics from "./metrics.js";
-import { startModerationScanner } from "./lib/moderation.js";
+import {
+  registerModerationActions,
+  startModerationScanner,
+} from "./lib/moderation.js";
 
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
@@ -35,6 +38,8 @@ export const app = new App({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
   receiver,
 });
+
+registerModerationActions(app);
 
 export const execute = (actionToExecute) => {
   return async (slackObject, ...props) => {
