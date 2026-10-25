@@ -39,12 +39,12 @@ Set `SCRAPBOOK_MODERATION_CHANNEL_ID` to a private review channel and `SCRAPBOOK
 Before starting Scrappy against a database, apply the Scrapbook schema migration and regenerate both Prisma clients:
 
 ```sh
-# PG_DATABASE_URL in the repo-root .env is used by the web migration CLI.
+# Keep PG_DATABASE_URL in apps/web/.env and apps/slack-bot/.env the same.
 bun --cwd apps/web --bun prisma migrate deploy
 bun run generate
 ```
 
-For local work, set the same local `PG_DATABASE_URL` in the repo-root `.env` and `apps/slack-bot/.env`; the migration and bot must point at the same database. Put the Slack app values, moderation channel, moderator IDs, and `SCRAPBOOK_AUTOMOD_RULES` in `apps/slack-bot/.env`. Use a separate test workspace and database, publish a post containing `modtest` with an image, and wait for the startup scan (or at most 30 minutes after startup). The test word is harmless and must never be used as a production rule.
+For local work, set the same local `PG_DATABASE_URL` in `apps/web/.env` and `apps/slack-bot/.env`; the migration and bot must point at the same database. Put the Slack app values, moderation channel, moderator IDs, and `SCRAPBOOK_AUTOMOD_RULES` in `apps/slack-bot/.env`. Use a separate test workspace and database, publish a post containing `modtest` with an image, and wait for the startup scan (or at most 30 minutes after startup). The test word is harmless and must never be used as a production rule.
 
 To verify the moderator flow manually, accept one flagged test post and confirm it remains visible. Publish another `modtest` post, choose **Reject**, enter a reason, and confirm the author receives that reason in Slack and the post disappears from the local Scrapbook. These steps verify the configured matching and review workflow; they do not validate Nemo's production rules or determine whether other content violates the Code of Conduct.
 
