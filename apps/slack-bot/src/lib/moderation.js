@@ -121,8 +121,12 @@ const ownedUploadKey = (value, accountId) => {
 };
 
 const deletePostAndOwnedUploads = async (update) => {
-  const removed = await prisma.updates.delete({ where: { id: update.id } });
-  if (!removed) throw new Error("The post could not be removed from Scrapbook.");
+  const removed = await prisma.updates.deleteMany({
+    where: { id: update.id, text: update.text },
+  });
+  if (removed?.count !== 1) {
+    throw new Error("The post changed before it could be removed. Review the updated post.");
+  }
 
   for (const attachment of update.attachments || []) {
     const key = ownedUploadKey(attachment, update.accountsID);
@@ -162,6 +166,9 @@ export const processUpdateForModeration = (update) =>
     const contentHash = hashText(update.text);
     const matches = await findModerationMatches(update.text || "");
     const flaggedTerms = [...new Set(matches.map(({ word }) => word))];
+    const flaggedCategories = [
+      ...new Set(matches.map(({ categoryKey }) => categoryKey).filter(Boolean)),
+    ];
     let review = await prisma.moderationReview.findUnique({
       where: { updateId: update.id },
     });
@@ -175,6 +182,7 @@ export const processUpdateForModeration = (update) =>
             updateId: update.id,
             contentHash,
             flaggedTerms,
+            flaggedCategories,
           },
         ],
         skipDuplicates: true,
@@ -187,6 +195,7 @@ export const processUpdateForModeration = (update) =>
     }
 
     if (review.contentHash === contentHash) return review;
+    if (review.status === "processing") return review;
 
     if (!flaggedTerms.length) {
       if (review.status === "pending") {
@@ -195,6 +204,7 @@ export const processUpdateForModeration = (update) =>
           data: {
             contentHash,
             flaggedTerms: [],
+            flaggedCategories: [],
             status: "superseded",
             reviewedAt: new Date(),
           },
@@ -208,6 +218,7 @@ export const processUpdateForModeration = (update) =>
       data: {
         contentHash,
         flaggedTerms,
+        flaggedCategories,
         status: "pending",
         reportChannel: null,
         reportMessageTs: null,
@@ -283,7 +294,10 @@ const buildModerationBlocks = (review, update) => {
         { type: "plain_text", text: authorLine },
         {
           type: "plain_text",
-          text: `Matched existing rule(s): ${review.flaggedTerms.join(", ")}`,
+          text: `Existing Nemo rule categories: ${review.flaggedCategories.join(", ") || "uncategorized"}. Matched rule(s): ${review.flaggedTerms.join(", ")}`.slice(
+            0,
+            1_900,
+          ),
         },
       ],
     },
@@ -690,10 +704,11 @@ export const scanRecentScrapbookPosts = async (client) => {
     if (updates.length < SCAN_PAGE_SIZE) break;
   }
 
-  await prisma.moderationScanState.update({
+  const savedState = await prisma.moderationScanState.update({
     where: { id: SCAN_STATE_ID },
-    data: { lastScannedAt: scanThrough, lastScannedId: "" },
+    data: { lastScannedAt: scanThrough },
   });
+  if (!savedState) throw new Error("Could not save moderation scan checkpoint");
   console.log(`Scrapbook AutoMod scanned ${scanned} post(s).`);
 };
 

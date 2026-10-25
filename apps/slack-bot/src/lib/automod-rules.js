@@ -92,7 +92,7 @@ const testRegex = (pattern, text) => {
   return regexMatcherPool.test(pattern, text);
 };
 
-const buildWordRule = (word) => {
+const buildWordRule = (word, categoryKey = null) => {
   const normalized = word.trim();
   if (!normalized) return null;
 
@@ -104,6 +104,7 @@ const buildWordRule = (word) => {
   return {
     word: normalized,
     matchMode: "word",
+    categoryKey,
     matches: (text) => pattern.test(text),
   };
 };
@@ -114,23 +115,18 @@ const buildRule = (entry) => {
   }
 
   const word = entry.word.trim();
-  const matchMode = entry.match_mode || "word";
-  if (!word || !VALID_MATCH_MODES.has(matchMode)) {
-    return null;
-  }
+  const configuredMode = entry.match_mode || "word";
+  const matchMode = VALID_MATCH_MODES.has(configuredMode) ? configuredMode : "word";
+  const categoryKey = typeof entry.category_key === "string" ? entry.category_key : null;
+  if (!word) return null;
 
-  if (entry.effect && entry.effect !== "flag") return null;
-  if (matchMode === "word") return buildWordRule(word);
+  if (entry.effect !== "flag") return null;
+  if (matchMode === "word") return buildWordRule(word, categoryKey);
   if (matchMode === "regex") {
-    try {
-      new RegExp(word, "iu");
-    } catch {
-      return null;
-    }
-
     return {
       word,
       matchMode,
+      categoryKey,
       matches: (text) => testRegex(word, text),
     };
   }
@@ -139,6 +135,7 @@ const buildRule = (entry) => {
   return {
     word,
     matchMode,
+    categoryKey,
     matches: (text) => text.toLocaleLowerCase().includes(needle),
   };
 };
@@ -184,7 +181,9 @@ export const findModerationMatches = async (text) => {
   if (typeof text !== "string" || !text) return [];
   const results = await Promise.all(
     configuredRules.map(async (rule) =>
-      (await rule.matches(text)) ? { word: rule.word, matchMode: rule.matchMode } : null,
+      (await rule.matches(text))
+        ? { word: rule.word, matchMode: rule.matchMode, categoryKey: rule.categoryKey }
+        : null,
     ),
   );
   return results.filter(Boolean);
