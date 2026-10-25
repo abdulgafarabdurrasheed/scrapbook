@@ -24,15 +24,29 @@ Scrappy provides some helpful commands in Slack. These commands are also documen
 
 Scrappy ports Nemo AutoMod's configurable `word`, `substring`, and `regex` matching modes for Scrapbook post text. A match creates a candidate for a human moderator; matching never deletes or warns on its own. Regex rules run in a worker with Nemo's 50 ms search limit so a slow pattern cannot block Scrappy's event loop.
 
-Rules are provided as JSON in `SCRAPBOOK_AUTOMOD_RULES`, using Nemo's field names. For a local plumbing check, use the harmless word `modtest`:
+The scan runs once when Scrappy starts and every 30 minutes after that. It reads recent posts from the shared Scrapbook database and keeps a 30-minute overlap between scans to catch late arrivals. On first startup it checks roughly the previous hour. Slack post edits are rechecked immediately.
+
+Rules are provided as JSON in `SCRAPBOOK_AUTOMOD_RULES`, using Nemo's field names and existing rule categories. Only rules whose effect is `flag` are used. For a local plumbing check, use the harmless word `modtest`:
 
 ```sh
 SCRAPBOOK_AUTOMOD_RULES='[{"word":"modtest","match_mode":"word","effect":"flag"}]'
 ```
 
-The repository does not include Nemo's live rule data. Configure only the existing, moderator-approved `flag` rules for production; the `modtest` example only checks that the alert and review flow works. The bot does not infer CoC violations from context. `SCRAPBOOK_BAD_WORDS` remains supported as a comma-separated list of base64-encoded words in whole-word mode.
+The repository does not include Nemo's live rule data. Configure only the existing, moderator-approved Nemo `flag` rules for production; the `modtest` example only checks that the alert and review flow works. The bot does not infer CoC violations from context. `SCRAPBOOK_BAD_WORDS` remains supported as a comma-separated list of base64-encoded words in whole-word mode for local plumbing checks.
 
-Set `SCRAPBOOK_MODERATION_CHANNEL_ID` to a private review channel and `SCRAPBOOK_MODERATOR_USER_IDS` to the comma-separated IDs allowed to review. Add Scrappy to the channel, enable Slack Interactivity, and point its request URL at the existing `/slack/events` endpoint. The app needs `chat:write`, `im:write`, `views:write`, and permission to delete the source Slack message when one exists.
+Set `SCRAPBOOK_MODERATION_CHANNEL_ID` to a private review channel and `SCRAPBOOK_MODERATOR_USER_IDS` to the comma-separated IDs allowed to review. Add Scrappy to the channel, enable Slack Interactivity, and point its request URL at the existing `/slack/events` endpoint. The app needs `chat:write`, `im:write`, and `views:write`; `SLACK_USER_TOKEN` needs permission to delete a source Slack message when one exists. Rejecting a post requires the author to have a linked Slack ID so Scrappy can send the reason by DM. A rejected post is removed from Scrapbook; if Slack refuses deletion of the original channel message, the review card tells moderators to remove that source message manually.
+
+Before starting Scrappy against a database, apply the Scrapbook schema migration and regenerate both Prisma clients:
+
+```sh
+# PG_DATABASE_URL in the repo-root .env is used by the web migration CLI.
+bun --cwd apps/web --bun prisma migrate deploy
+bun run generate
+```
+
+For local work, set the same local `PG_DATABASE_URL` in the repo-root `.env` and `apps/slack-bot/.env`; the migration and bot must point at the same database. Put the Slack app values, moderation channel, moderator IDs, and `SCRAPBOOK_AUTOMOD_RULES` in `apps/slack-bot/.env`. Use a separate test workspace and database, publish a post containing `modtest` with an image, and wait for the startup scan (or at most 30 minutes after startup). The test word is harmless and must never be used as a production rule.
+
+To verify the moderator flow manually, accept one flagged test post and confirm it remains visible. Publish another `modtest` post, choose **Reject**, enter a reason, and confirm the author receives that reason in Slack and the post disappears from the local Scrapbook. These steps verify the configured matching and review workflow; they do not validate Nemo's production rules or determine whether other content violates the Code of Conduct.
 
 ## Contributing
 
