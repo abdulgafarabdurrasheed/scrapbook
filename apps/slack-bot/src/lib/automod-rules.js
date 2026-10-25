@@ -13,12 +13,17 @@ class RegexMatcherPool {
   constructor(size) {
     this.queue = [];
     this.nextId = 0;
-    this.slots = Array.from({ length: size }, () => ({ worker: null, job: null }));
+    this.slots = Array.from({ length: size }, () => ({
+      worker: null,
+      job: null,
+    }));
     this.slots.forEach((slot) => this.startWorker(slot));
   }
 
   startWorker(slot) {
-    const worker = new Worker(new URL("./automod-regex-worker.js", import.meta.url));
+    const worker = new Worker(
+      new URL("./automod-regex-worker.js", import.meta.url),
+    );
     worker.unref();
     slot.worker = worker;
 
@@ -68,7 +73,11 @@ class RegexMatcherPool {
       }, REGEX_TIMEOUT_MS);
 
       try {
-        slot.worker.postMessage({ id: job.id, pattern: job.pattern, text: job.text });
+        slot.worker.postMessage({
+          id: job.id,
+          pattern: job.pattern,
+          text: job.text,
+        });
       } catch {
         clearTimeout(job.timer);
         slot.job = null;
@@ -116,8 +125,11 @@ const buildRule = (entry) => {
 
   const word = entry.word.trim();
   const configuredMode = entry.match_mode || "word";
-  const matchMode = VALID_MATCH_MODES.has(configuredMode) ? configuredMode : "word";
-  const categoryKey = typeof entry.category_key === "string" ? entry.category_key : null;
+  const matchMode = VALID_MATCH_MODES.has(configuredMode)
+    ? configuredMode
+    : "word";
+  const categoryKey =
+    typeof entry.category_key === "string" ? entry.category_key : null;
   if (!word) return null;
 
   if (entry.effect !== "flag") return null;
@@ -149,7 +161,9 @@ const parseConfiguredRules = () => {
       const rules = parsed.map(buildRule);
       const ignored = rules.filter((rule) => !rule).length;
       if (ignored) {
-        console.warn(`Scrapbook AutoMod ignored ${ignored} invalid or non-flag rule(s).`);
+        console.warn(
+          `Scrapbook AutoMod ignored ${ignored} invalid or non-flag rule(s).`,
+        );
       }
       return rules.filter(Boolean);
     } catch (error) {
@@ -182,7 +196,11 @@ export const findModerationMatches = async (text) => {
   const results = await Promise.all(
     configuredRules.map(async (rule) =>
       (await rule.matches(text))
-        ? { word: rule.word, matchMode: rule.matchMode, categoryKey: rule.categoryKey }
+        ? {
+            word: rule.word,
+            matchMode: rule.matchMode,
+            categoryKey: rule.categoryKey,
+          }
         : null,
     ),
   );

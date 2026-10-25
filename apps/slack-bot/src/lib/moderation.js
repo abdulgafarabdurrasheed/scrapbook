@@ -16,7 +16,9 @@ const updateLocks = new Map();
 const botAuthorCache = new Map();
 
 const hashText = (text) =>
-  createHash("sha256").update(text || "", "utf8").digest("hex");
+  createHash("sha256")
+    .update(text || "", "utf8")
+    .digest("hex");
 
 const isBotAuthor = async (client, slackId) => {
   if (!slackId || !client?.users?.info) return false;
@@ -27,7 +29,10 @@ const isBotAuthor = async (client, slackId) => {
         .info({ user: slackId })
         .then((result) => result?.user?.is_bot === true)
         .catch((error) => {
-          console.warn(`Could not check whether ${slackId} is a bot:`, error.message);
+          console.warn(
+            `Could not check whether ${slackId} is a bot:`,
+            error.message,
+          );
           return false;
         }),
     );
@@ -67,7 +72,8 @@ const isAuthorizedModerator = (userId) =>
 const parseActionValue = (value) => {
   try {
     const parsed = JSON.parse(value || "{}");
-    if (typeof parsed.id !== "string" || typeof parsed.hash !== "string") return null;
+    if (typeof parsed.id !== "string" || typeof parsed.hash !== "string")
+      return null;
     return parsed;
   } catch {
     return null;
@@ -75,9 +81,17 @@ const parseActionValue = (value) => {
 };
 
 const getReviewAndUpdate = async (reviewId, contentHash) => {
-  const review = await prisma.moderationReview.findUnique({ where: { id: reviewId } });
-  if (!review || review.contentHash !== contentHash || review.status !== "pending") {
-    return { error: "This review is no longer pending or its post has changed." };
+  const review = await prisma.moderationReview.findUnique({
+    where: { id: reviewId },
+  });
+  if (
+    !review ||
+    review.contentHash !== contentHash ||
+    review.status !== "pending"
+  ) {
+    return {
+      error: "This review is no longer pending or its post has changed.",
+    };
   }
 
   const update = await prisma.updates.findUnique({
@@ -95,7 +109,9 @@ const getReviewAndUpdate = async (reviewId, contentHash) => {
     },
   });
   if (!update || hashText(update.text) !== contentHash) {
-    return { error: "The post changed or was deleted. Scan it again before reviewing." };
+    return {
+      error: "The post changed or was deleted. Scan it again before reviewing.",
+    };
   }
 
   return { review, update };
@@ -128,7 +144,8 @@ const ownedUploadKey = (value, accountId) => {
       "scrapbook-into-the-redwoods.s3.amazonaws.com",
       "scrapbook-into-the-redwoods.s3.us-east-1.amazonaws.com",
     ]);
-    if (url.protocol !== "https:" || !allowedHosts.has(url.hostname)) return null;
+    if (url.protocol !== "https:" || !allowedHosts.has(url.hostname))
+      return null;
     const key = decodeURIComponent(url.pathname.slice(1));
     return key.startsWith(`web/${accountId}/`) && !key.split("/").includes("..")
       ? key
@@ -143,7 +160,9 @@ const deletePostAndOwnedUploads = async (update) => {
     where: { id: update.id, text: update.text },
   });
   if (removed?.count !== 1) {
-    throw new Error("The post changed before it could be removed. Review the updated post.");
+    throw new Error(
+      "The post changed before it could be removed. Review the updated post.",
+    );
   }
 
   for (const attachment of update.attachments || []) {
@@ -183,7 +202,8 @@ export const processUpdateForModeration = (update, client) =>
   withUpdateLock(update.id, async () => {
     const contentHash = hashText(update.text);
     const matches = await findModerationMatches(update.text || "");
-    if (matches.length && (await isBotAuthor(client, update.accountsSlackID))) return null;
+    if (matches.length && (await isBotAuthor(client, update.accountsSlackID)))
+      return null;
     const flaggedTerms = [...new Set(matches.map(({ word }) => word))];
     const flaggedCategories = [
       ...new Set(matches.map(({ categoryKey }) => categoryKey).filter(Boolean)),
@@ -209,7 +229,8 @@ export const processUpdateForModeration = (update, client) =>
       review = await prisma.moderationReview.findUnique({
         where: { updateId: update.id },
       });
-      if (!review) throw new Error(`Could not save moderation review for ${update.id}`);
+      if (!review)
+        throw new Error(`Could not save moderation review for ${update.id}`);
       return review;
     }
 
@@ -304,7 +325,9 @@ const buildModerationBlocks = (review, update) => {
       type: "section",
       text: {
         type: "plain_text",
-        text: postText ? `${postText}${truncated ? "…" : ""}` : "(This post has no text.)",
+        text: postText
+          ? `${postText}${truncated ? "…" : ""}`
+          : "(This post has no text.)",
       },
     },
     {
@@ -382,11 +405,17 @@ export const postModerationAlert = async (client, review) => {
     unfurl_media: false,
   });
   if (!result?.ok || !result.ts) {
-    throw new Error(`Slack did not confirm the moderation alert: ${result?.error || "unknown error"}`);
+    throw new Error(
+      `Slack did not confirm the moderation alert: ${result?.error || "unknown error"}`,
+    );
   }
 
   const saved = await prisma.moderationReview.updateMany({
-    where: { id: review.id, contentHash: review.contentHash, status: "pending" },
+    where: {
+      id: review.id,
+      contentHash: review.contentHash,
+      status: "pending",
+    },
     data: { reportChannel: channel, reportMessageTs: result.ts },
   });
   if (!saved?.count) {
@@ -440,106 +469,135 @@ export const reviewScrapbookUpdate = async (client, updateId) => {
 };
 
 export const registerModerationActions = (slackApp) => {
-  slackApp.action("scrapbook_moderation_accept", async ({ ack, body, action, client }) => {
-    await ack();
-    if (!isAuthorizedModerator(body.user?.id)) {
-      await postEphemeralNotice(
+  slackApp.action(
+    "scrapbook_moderation_accept",
+    async ({ ack, body, action, client }) => {
+      await ack();
+      if (!isAuthorizedModerator(body.user?.id)) {
+        await postEphemeralNotice(
+          client,
+          body.channel?.id,
+          body.user?.id,
+          "You are not on the configured Scrapbook moderator allowlist.",
+        );
+        return;
+      }
+
+      const value = parseActionValue(action.value);
+      if (!value) return;
+      const found = await getReviewAndUpdate(value.id, value.hash);
+      if (found.error) {
+        await postEphemeralNotice(
+          client,
+          body.channel?.id,
+          body.user.id,
+          found.error,
+        );
+        return;
+      }
+
+      const accepted = await prisma.moderationReview.updateMany({
+        where: { id: value.id, contentHash: value.hash, status: "pending" },
+        data: {
+          status: "accepted",
+          reviewedBy: body.user.id,
+          reviewedAt: new Date(),
+        },
+      });
+      if (accepted?.count !== 1) {
+        await postEphemeralNotice(
+          client,
+          body.channel?.id,
+          body.user.id,
+          "Another moderator already handled this review.",
+        );
+        return;
+      }
+
+      const review = await prisma.moderationReview.findUnique({
+        where: { id: value.id },
+      });
+      await finishReviewMessage(
         client,
-        body.channel?.id,
-        body.user?.id,
-        "You are not on the configured Scrapbook moderator allowlist.",
+        review,
+        `Accepted by <@${body.user.id}> as not harmful. The post remains on Scrapbook.`,
       );
-      return;
-    }
+    },
+  );
 
-    const value = parseActionValue(action.value);
-    if (!value) return;
-    const found = await getReviewAndUpdate(value.id, value.hash);
-    if (found.error) {
-      await postEphemeralNotice(client, body.channel?.id, body.user.id, found.error);
-      return;
-    }
+  slackApp.action(
+    "scrapbook_moderation_reject",
+    async ({ ack, body, action, client }) => {
+      await ack();
+      if (!isAuthorizedModerator(body.user?.id)) {
+        await postEphemeralNotice(
+          client,
+          body.channel?.id,
+          body.user?.id,
+          "You are not on the configured Scrapbook moderator allowlist.",
+        );
+        return;
+      }
 
-    const accepted = await prisma.moderationReview.updateMany({
-      where: { id: value.id, contentHash: value.hash, status: "pending" },
-      data: { status: "accepted", reviewedBy: body.user.id, reviewedAt: new Date() },
-    });
-    if (accepted?.count !== 1) {
-      await postEphemeralNotice(
-        client,
-        body.channel?.id,
-        body.user.id,
-        "Another moderator already handled this review.",
-      );
-      return;
-    }
+      const value = parseActionValue(action.value);
+      if (!value) return;
+      const found = await getReviewAndUpdate(value.id, value.hash);
+      if (found.error) {
+        await postEphemeralNotice(
+          client,
+          body.channel?.id,
+          body.user.id,
+          found.error,
+        );
+        return;
+      }
 
-    const review = await prisma.moderationReview.findUnique({ where: { id: value.id } });
-    await finishReviewMessage(
-      client,
-      review,
-      `Accepted by <@${body.user.id}> as not harmful. The post remains on Scrapbook.`,
-    );
-  });
-
-  slackApp.action("scrapbook_moderation_reject", async ({ ack, body, action, client }) => {
-    await ack();
-    if (!isAuthorizedModerator(body.user?.id)) {
-      await postEphemeralNotice(
-        client,
-        body.channel?.id,
-        body.user?.id,
-        "You are not on the configured Scrapbook moderator allowlist.",
-      );
-      return;
-    }
-
-    const value = parseActionValue(action.value);
-    if (!value) return;
-    const found = await getReviewAndUpdate(value.id, value.hash);
-    if (found.error) {
-      await postEphemeralNotice(client, body.channel?.id, body.user.id, found.error);
-      return;
-    }
-
-    await client.views.open({
-      trigger_id: body.trigger_id,
-      view: {
-        type: "modal",
-        callback_id: "scrapbook_moderation_reject_submit",
-        private_metadata: JSON.stringify({ id: value.id, hash: value.hash }),
-        title: { type: "plain_text", text: "Reject Scrapbook post" },
-        submit: { type: "plain_text", text: "Reject post" },
-        close: { type: "plain_text", text: "Cancel" },
-        blocks: [
-          {
-            type: "input",
-            block_id: "rejection_reason_block",
-            label: { type: "plain_text", text: "Reason to send to the author" },
-            element: {
-              type: "plain_text_input",
-              action_id: "rejection_reason",
-              multiline: true,
-              max_length: 1000,
-              placeholder: {
+      await client.views.open({
+        trigger_id: body.trigger_id,
+        view: {
+          type: "modal",
+          callback_id: "scrapbook_moderation_reject_submit",
+          private_metadata: JSON.stringify({ id: value.id, hash: value.hash }),
+          title: { type: "plain_text", text: "Reject Scrapbook post" },
+          submit: { type: "plain_text", text: "Reject post" },
+          close: { type: "plain_text", text: "Cancel" },
+          blocks: [
+            {
+              type: "input",
+              block_id: "rejection_reason_block",
+              label: {
                 type: "plain_text",
-                text: "Explain why this post is being rejected.",
+                text: "Reason to send to the author",
+              },
+              element: {
+                type: "plain_text_input",
+                action_id: "rejection_reason",
+                multiline: true,
+                max_length: 1000,
+                placeholder: {
+                  type: "plain_text",
+                  text: "Explain why this post is being rejected.",
+                },
               },
             },
-          },
-        ],
-      },
-    });
-  });
+          ],
+        },
+      });
+    },
+  );
 
   slackApp.view(
     "scrapbook_moderation_reject_submit",
     async ({ ack, body, view, client }) => {
-      const reason = view.state.values.rejection_reason_block.rejection_reason.value?.trim();
+      const reason =
+        view.state.values.rejection_reason_block.rejection_reason.value?.trim();
       if (!reason) {
         await ack({
           response_action: "errors",
-          errors: { rejection_reason_block: "Enter a reason to send to the post author." },
+          errors: {
+            rejection_reason_block:
+              "Enter a reason to send to the post author.",
+          },
         });
         return;
       }
@@ -570,7 +628,9 @@ export const registerModerationActions = (slackApp) => {
 
       const { review, update } = found;
       const authorSlackId =
-        update.accountsSlackID || update.SlackAccounts?.slackID || update.Accounts?.slackID;
+        update.accountsSlackID ||
+        update.SlackAccounts?.slackID ||
+        update.Accounts?.slackID;
       if (!authorSlackId) {
         await postEphemeralNotice(
           client,
@@ -594,7 +654,8 @@ export const registerModerationActions = (slackApp) => {
       let authorNotified = false;
       try {
         const dm = await client.conversations.open({ users: authorSlackId });
-        if (!dm?.ok || !dm.channel?.id) throw new Error(dm?.error || "Could not open author DM");
+        if (!dm?.ok || !dm.channel?.id)
+          throw new Error(dm?.error || "Could not open author DM");
         const sent = await client.chat.postMessage({
           channel: dm.channel.id,
           text: `A moderator rejected your Scrapbook post for this reason:\n\n${reason}`,
@@ -602,7 +663,8 @@ export const registerModerationActions = (slackApp) => {
           unfurl_links: false,
           unfurl_media: false,
         });
-        if (!sent?.ok) throw new Error(sent?.error || "Could not send author DM");
+        if (!sent?.ok)
+          throw new Error(sent?.error || "Could not send author DM");
         authorNotified = true;
 
         await deletePostAndOwnedUploads(update);
@@ -615,10 +677,17 @@ export const registerModerationActions = (slackApp) => {
               channel: update.channel,
               ts,
             });
-            if (!deleted?.ok) throw new Error(deleted?.error || "Slack did not delete the source message");
+            if (!deleted?.ok)
+              throw new Error(
+                deleted?.error || "Slack did not delete the source message",
+              );
           } catch (error) {
-            sourceMessageWarning = " The Scrapbook post was removed, but its source Slack message could not be deleted; please remove it manually.";
-            console.error("Could not delete rejected Scrapbook source message:", error);
+            sourceMessageWarning =
+              " The Scrapbook post was removed, but its source Slack message could not be deleted; please remove it manually.";
+            console.error(
+              "Could not delete rejected Scrapbook source message:",
+              error,
+            );
           }
         }
 
@@ -631,7 +700,8 @@ export const registerModerationActions = (slackApp) => {
             reviewedAt: new Date(),
           },
         });
-        if (!savedReview) throw new Error("The rejection decision could not be recorded.");
+        if (!savedReview)
+          throw new Error("The rejection decision could not be recorded.");
         const completedReview = await prisma.moderationReview.findUnique({
           where: { id: review.id },
         });
@@ -686,7 +756,9 @@ const scanPage = async (windowStart, scanThrough, cursor) => {
 
 export const scanRecentScrapbookPosts = async (client) => {
   if (!moderationRulesConfigured) {
-    console.warn("Scrapbook AutoMod scan skipped: no flag rules are configured.");
+    console.warn(
+      "Scrapbook AutoMod scan skipped: no flag rules are configured.",
+    );
     return;
   }
 
@@ -700,18 +772,22 @@ export const scanRecentScrapbookPosts = async (client) => {
     },
     update: {},
   });
-  if (!state?.lastScannedAt) throw new Error("Could not load moderation scan state");
+  if (!state?.lastScannedAt)
+    throw new Error("Could not load moderation scan state");
 
   // Re-scan one interval of overlap in case an event arrived late. Review
   // records are keyed by update ID and content hash, so unchanged posts do not
   // create duplicate alerts.
-  const windowStart = new Date(state.lastScannedAt.getTime() - SCAN_INTERVAL_MS);
+  const windowStart = new Date(
+    state.lastScannedAt.getTime() - SCAN_INTERVAL_MS,
+  );
   let cursor = null;
   let scanned = 0;
 
   while (true) {
     const updates = await scanPage(windowStart, scanThrough, cursor);
-    if (!Array.isArray(updates)) throw new Error("Could not read Scrapbook posts for moderation");
+    if (!Array.isArray(updates))
+      throw new Error("Could not read Scrapbook posts for moderation");
     if (!updates.length) break;
 
     for (const update of updates) {
