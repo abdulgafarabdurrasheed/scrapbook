@@ -51,6 +51,8 @@ export default async function handler(req, res) {
         }
       }
 
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${session.user.id}, 0))`
+
       const contentHash = hashText(update.text)
 
       const recentReportCount = await tx.scrapbookPostReport.count({
