@@ -192,6 +192,7 @@ model ScrapbookPostReport {
 
   @@unique([updateId, reporterAccountId])
   @@index([reporterAccountId, createdAt])
+  @@index([notifiedAt, createdAt])
 }
 
 model ModerationScanState {
