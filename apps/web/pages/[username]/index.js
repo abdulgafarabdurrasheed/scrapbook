@@ -14,7 +14,7 @@ import Post from '../../components/post'
 import AudioPlayer from '../../components/audio-player'
 import ExamplePosts from '../../components/example-posts'
 import FourOhFour from '../404'
-import { exclude } from '../api/posts'
+import { exclude } from '../../lib/posts'
 
 const HOST =
   process.env.NODE_ENV === 'development' ? '' : 'https://scrapbook.hackclub.com'
