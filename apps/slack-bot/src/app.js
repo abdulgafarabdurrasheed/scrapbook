@@ -148,16 +148,18 @@ try {
 (async () => {
   await app.start(process.env.PORT || 3001);
   startModerationScanner(app.client);
-  let latestCommitMsg = "misc...";
-  await fetch("https://api.github.com/repos/hackclub/scrappy/commits/main")
-    .then((r) => r.json())
-    .then((d) => (latestCommitMsg = d.commit?.message || ""));
-  app.client.chat.postMessage({
-    channel: "C0P5NE354",
-    text: t("startup.message", { latestCommitMsg }),
-    parse: "mrkdwn",
-    unfurl_links: false,
-    unfurl_media: false,
-  });
+  if (process.env.SCRAPPY_DISABLE_STARTUP_MESSAGE !== "true") {
+    let latestCommitMsg = "misc...";
+    await fetch("https://api.github.com/repos/hackclub/scrappy/commits/main")
+      .then((r) => r.json())
+      .then((d) => (latestCommitMsg = d.commit?.message || ""));
+    app.client.chat.postMessage({
+      channel: "C0P5NE354",
+      text: t("startup.message", { latestCommitMsg }),
+      parse: "mrkdwn",
+      unfurl_links: false,
+      unfurl_media: false,
+    });
+  }
   // console.log("⚡️ Scrappy is running !");
 })();
