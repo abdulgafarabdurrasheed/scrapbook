@@ -26,6 +26,8 @@ Scrappy ports Nemo AutoMod's configurable `word`, `substring`, and `regex` match
 
 The scan runs once when Scrappy starts and every 30 minutes after that. It reads recent posts from the shared Scrapbook database and keeps a 30-minute overlap between scans to catch late arrivals. On first startup it checks roughly the previous hour. Slack post edits are rechecked immediately.
 
+Signed-in users can report a real post with the **Report** button on feed, profile, and club posts. Each account can report a post once, with a limit of ten different posts per hour. A new report creates a pending moderation review or joins that post's existing pending review; it never approves or removes the post automatically. A report can reopen a previously accepted review, while an active review cannot be reported again until it is handled. Scrappy checks for new reports every 15 seconds and sends the same accept/reject card to the configured review channel, updating an existing card when another person reports it. Rejected posts are removed and can no longer be reported.
+
 Rules are provided as JSON in `SCRAPBOOK_AUTOMOD_RULES`, using Nemo's field names and existing rule categories. Only rules whose effect is `flag` are used. For a local plumbing check, use the harmless word `modtest`:
 
 ```sh
