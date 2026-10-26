@@ -36,7 +36,7 @@ The repository does not include Nemo's live rule data. Configure only the existi
 
 Set `SCRAPBOOK_MODERATION_CHANNEL_ID` to a private review channel and `SCRAPBOOK_MODERATOR_USER_IDS` to the comma-separated IDs allowed to review. Add Scrappy to the channel, enable Slack Interactivity, and point its request URL at the existing `/slack/events` endpoint. The app needs `chat:write`, `im:write`, and `views:write`; `SLACK_USER_TOKEN` needs permission to delete a source Slack message when one exists. Rejecting a post requires the author to have a linked Slack ID so Scrappy can send the reason by DM. A rejected post is removed from Scrapbook; if Slack refuses deletion of the original channel message, the review card tells moderators to remove that source message manually.
 
-Before starting Scrappy against a database, apply the Scrapbook schema migration and regenerate both Prisma clients:
+For a shared or production database, apply the Scrapbook migrations and regenerate both Prisma clients:
 
 ```sh
 # Keep PG_DATABASE_URL in apps/web/.env and apps/slack-bot/.env the same.
@@ -44,7 +44,18 @@ bun --cwd apps/web --bun prisma migrate deploy
 bun run generate
 ```
 
-For local work, set the same local `PG_DATABASE_URL` in `apps/web/.env` and `apps/slack-bot/.env`; the migration and bot must point at the same database. Put the Slack app values, moderation channel, moderator IDs, and `SCRAPBOOK_AUTOMOD_RULES` in `apps/slack-bot/.env`. Use a separate test workspace and database, publish a post containing `modtest` with an image, and wait for the startup scan (or at most 30 minutes after startup). The test word is harmless and must never be used as a production rule.
+For a brand-new, disposable local database, sync the current schema directly instead:
+
+```sh
+bun --cwd apps/web --bun prisma db push
+bun run generate
+```
+
+`db push` does not create or validate migration history. Use it only for a disposable development database; use `migrate deploy` for a shared or production database. Keep the same local `PG_DATABASE_URL` in `apps/web/.env` and `apps/slack-bot/.env` so the website and bot share the test data.
+
+The Hack Club Identity client ID and secret in `apps/web/.env` only let you sign into the local website. They are not Slack bot credentials. A real Slack review requires a separate development Slack app installed in a test workspace, with its bot token and signing secret in `apps/slack-bot/.env`; configure Interactivity to point to the bot's `/slack/events` endpoint. Website image uploads also need test S3 credentials in `apps/web/.env`. These credentials are not included in the repository; do not copy production secrets into a local setup.
+
+Put the moderation channel, moderator IDs, and `SCRAPBOOK_AUTOMOD_RULES` in `apps/slack-bot/.env`. Use a separate test workspace and database, publish a post containing `modtest` with an image, and wait for the startup scan (or at most 30 minutes after startup). The test word is harmless and must never be used as a production rule. The repository does not include Nemo's live rule data, so a maintainer must supply the approved `flag` rules before the port can detect the same candidates as the live Nemo installation.
 
 To verify the moderator flow manually, accept one flagged test post and confirm it remains visible. Publish another `modtest` post, choose **Reject**, enter a reason, and confirm the author receives that reason in Slack and the post disappears from the local Scrapbook. These steps verify the configured matching and review workflow; they do not validate Nemo's production rules or determine whether other content violates the Code of Conduct.
 
