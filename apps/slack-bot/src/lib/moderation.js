@@ -8,6 +8,7 @@ import {
 } from "./automod-rules.js";
 
 const SCAN_INTERVAL_MS = 30 * 60 * 1000;
+const REPORT_SCAN_INTERVAL_MS = 15 * 1000;
 const SCAN_STATE_ID = "scrapbook-posts";
 const SCAN_PAGE_SIZE = 200;
 const MAX_POST_TEXT_LENGTH = 2_800;
@@ -291,7 +292,23 @@ const fetchUpdateWithAuthor = (updateId) =>
     },
   });
 
-const buildModerationBlocks = (review, update) => {
+const getPostReports = (updateId) =>
+  prisma.scrapbookPostReport.findMany({
+    where: { updateId },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: { id: true, reporterUsername: true },
+  });
+
+const markPostReportsNotified = (reports) => {
+  const ids = reports.map(({ id }) => id);
+  if (!ids.length) return Promise.resolve();
+  return prisma.scrapbookPostReport.updateMany({
+    where: { id: { in: ids }, notifiedAt: null },
+    data: { notifiedAt: new Date() },
+  });
+};
+
+const buildModerationBlocks = (review, update, reporters = []) => {
   const author =
     update.Accounts?.username || update.SlackAccounts?.username || "Unknown";
   const postText = (update.text || "").slice(0, MAX_POST_TEXT_LENGTH);
@@ -336,14 +353,29 @@ const buildModerationBlocks = (review, update) => {
         { type: "plain_text", text: authorLine },
         {
           type: "plain_text",
-          text: `Existing Nemo rule categories: ${review.flaggedCategories.join(", ") || "uncategorized"}. Matched rule(s): ${review.flaggedTerms.join(", ")}`.slice(
-            0,
-            1_900,
-          ),
+          text: review.flaggedTerms.length
+            ? `Nemo rule categories: ${review.flaggedCategories.join(", ") || "uncategorized"}. Matched rule(s): ${review.flaggedTerms.join(", ")}`.slice(
+                0,
+                1_900,
+              )
+            : "Reported by a Scrapbook user.",
         },
       ],
     },
   ];
+
+  if (reporters.length) {
+    const names = reporters
+      .slice(0, 8)
+      .map(({ reporterUsername }) => `@${reporterUsername}`);
+    if (reporters.length > names.length) {
+      names.push(`and ${reporters.length - names.length} more`);
+    }
+    blocks[2].elements.push({
+      type: "plain_text",
+      text: `Reported by: ${names.join(", ")}`.slice(0, 1_900),
+    });
+  }
 
   if (author !== "Unknown") {
     blocks.push({
@@ -381,7 +413,11 @@ const closeSupersededAlert = async (client, review) => {
   });
 };
 
-export const postModerationAlert = async (client, review) => {
+const postModerationAlertUnlocked = async (client, review) => {
+  if (!review?.id) return;
+  review = await prisma.moderationReview.findUnique({
+    where: { id: review.id },
+  });
   if (!review || review.status !== "pending") return;
 
   if (review.reportChannel && review.reportMessageTs) return;
@@ -395,12 +431,16 @@ export const postModerationAlert = async (client, review) => {
   }
 
   const update = await fetchUpdateWithAuthor(review.updateId);
-  if (!update) return;
+  const reports = await getPostReports(review.updateId);
+  if (!update) {
+    await markPostReportsNotified(reports);
+    return;
+  }
   const mentions = moderatorIds.map((id) => `<@${id}>`).join(" ");
   const result = await client.chat.postMessage({
     channel,
     text: `Potentially Harmful content needs review. ${mentions}`,
-    blocks: buildModerationBlocks(review, update),
+    blocks: buildModerationBlocks(review, update, reports),
     unfurl_links: false,
     unfurl_media: false,
   });
@@ -425,8 +465,57 @@ export const postModerationAlert = async (client, review) => {
       text: "This moderation candidate changed before it could be reviewed.",
       blocks: [],
     });
+    await markPostReportsNotified(reports);
+    return;
   }
+  await markPostReportsNotified(reports);
 };
+
+export const postModerationAlert = (client, review) =>
+  review?.updateId
+    ? withUpdateLock(review.updateId, () =>
+        postModerationAlertUnlocked(client, review),
+      )
+    : Promise.resolve();
+
+const updateModerationAlertUnlocked = async (client, review) => {
+  if (!review?.id) return;
+  review = await prisma.moderationReview.findUnique({
+    where: { id: review.id },
+  });
+  if (!review || review.status !== "pending") return;
+  if (!review.reportChannel || !review.reportMessageTs) {
+    return postModerationAlertUnlocked(client, review);
+  }
+
+  const update = await fetchUpdateWithAuthor(review.updateId);
+  const reports = await getPostReports(review.updateId);
+  if (!update) {
+    await markPostReportsNotified(reports);
+    return;
+  }
+  const result = await client.chat.update({
+    channel: review.reportChannel,
+    ts: review.reportMessageTs,
+    text: "Potentially Harmful content needs review.",
+    blocks: buildModerationBlocks(review, update, reports),
+    unfurl_links: false,
+    unfurl_media: false,
+  });
+  if (!result?.ok) {
+    throw new Error(
+      `Slack did not confirm the report update: ${result?.error || "unknown error"}`,
+    );
+  }
+  await markPostReportsNotified(reports);
+};
+
+export const updateModerationAlert = (client, review) =>
+  review?.updateId
+    ? withUpdateLock(review.updateId, () =>
+        updateModerationAlertUnlocked(client, review),
+      )
+    : Promise.resolve();
 
 const reviewAndAlert = async (client, update) => {
   const previousReview = await prisma.moderationReview.findUnique({
@@ -809,9 +898,47 @@ export const scanRecentScrapbookPosts = async (client) => {
 
 let scanTimer;
 let scanInProgress = false;
+let reportScanTimer;
+let reportScanInProgress = false;
+
+export const scanPendingScrapbookReports = async (client) => {
+  if (
+    !process.env.SCRAPBOOK_MODERATION_CHANNEL_ID ||
+    !parseModeratorIds().length
+  ) {
+    return;
+  }
+
+  const pendingReports = await prisma.scrapbookPostReport.findMany({
+    where: { notifiedAt: null },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    take: SCAN_PAGE_SIZE,
+    select: { id: true, updateId: true },
+  });
+  const updateIds = [
+    ...new Set(pendingReports.map(({ updateId }) => updateId)),
+  ];
+
+  for (const updateId of updateIds) {
+    const review = await prisma.moderationReview.findUnique({
+      where: { updateId },
+    });
+    if (!review || review.status !== "pending") {
+      await markPostReportsNotified(
+        pendingReports.filter((report) => report.updateId === updateId),
+      );
+      continue;
+    }
+    if (review.reportChannel && review.reportMessageTs) {
+      await updateModerationAlert(client, review);
+    } else {
+      await postModerationAlert(client, review);
+    }
+  }
+};
 
 export const startModerationScanner = (client) => {
-  if (scanTimer) return;
+  if (scanTimer && reportScanTimer) return;
 
   const runScan = async () => {
     if (scanInProgress) return;
@@ -826,6 +953,26 @@ export const startModerationScanner = (client) => {
   };
 
   void runScan();
-  scanTimer = setInterval(runScan, SCAN_INTERVAL_MS);
-  scanTimer.unref?.();
+  if (!scanTimer) {
+    scanTimer = setInterval(runScan, SCAN_INTERVAL_MS);
+    scanTimer.unref?.();
+  }
+
+  const runReportScan = async () => {
+    if (reportScanInProgress) return;
+    reportScanInProgress = true;
+    try {
+      await scanPendingScrapbookReports(client);
+    } catch (error) {
+      console.error("Scrapbook post report scan failed:", error);
+    } finally {
+      reportScanInProgress = false;
+    }
+  };
+
+  void runReportScan();
+  if (!reportScanTimer) {
+    reportScanTimer = setInterval(runReportScan, REPORT_SCAN_INTERVAL_MS);
+    reportScanTimer.unref?.();
+  }
 };
