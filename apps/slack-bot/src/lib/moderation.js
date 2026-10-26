@@ -478,7 +478,7 @@ export const registerModerationActions = (slackApp) => {
           client,
           body.channel?.id,
           body.user?.id,
-          "You are not on the configured Scrapbook moderator allowlist.",
+          `You are not on the configured Scrapbook moderator allowlist. Your Slack ID is ${body.user?.id || "unknown"}.`,
         );
         return;
       }
@@ -534,7 +534,7 @@ export const registerModerationActions = (slackApp) => {
           client,
           body.channel?.id,
           body.user?.id,
-          "You are not on the configured Scrapbook moderator allowlist.",
+          `You are not on the configured Scrapbook moderator allowlist. Your Slack ID is ${body.user?.id || "unknown"}.`,
         );
         return;
       }
