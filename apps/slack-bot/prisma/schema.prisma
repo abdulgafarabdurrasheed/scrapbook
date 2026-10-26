@@ -188,6 +188,7 @@ model ScrapbookPostReport {
   reporterAccountId  String
   reporterUsername   String
   createdAt          DateTime @default(now())
+  notifiedAt         DateTime?
 
   @@unique([updateId, reporterAccountId])
   @@index([reporterAccountId, createdAt])
